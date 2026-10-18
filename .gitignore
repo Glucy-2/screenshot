@@ -1,0 +1,20 @@
+*.iml
+.DS_Store
+.gradle
+.kotlin
+/.idea
+.vscode/
+/captures
+/local.properties
+build
+
+# 签名密钥与本地配置（不提交）
+*.keystore
+*.jks
+signing.properties
+
+# 日志
+*.log
+
+# WorkBuddy 项目本地数据
+.workbuddy/
