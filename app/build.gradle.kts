@@ -23,8 +23,8 @@ android {
         applicationId = "io.github.a422015028.screenshot"
         minSdk = 26
         targetSdk = 37
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 31
+        versionName = "3.1.0"
     }
 
     signingConfigs {

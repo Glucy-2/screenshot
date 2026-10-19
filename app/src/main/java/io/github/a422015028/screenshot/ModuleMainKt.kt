@@ -10,6 +10,13 @@ class ModuleMainKt : XposedModule() {
 
     override fun onPackageLoaded(param: XposedModuleInterface.PackageLoadedParam) {
         val packageName = param.packageName
+        // 跳过 system_server（packageName == "android"）：应用层 Window/SurfaceView 的
+        // hook 只对真正的应用进程有意义，system_server 的拦截由 onSystemServerStarting 单独处理。
+        // 本模块的作用域需在管理器里勾选「系统框架 + 所有需要截屏的应用」，
+        // 这样每个应用进程加载时才会走到这里并清除 FLAG_SECURE。
+        if (packageName == "android") {
+            return
+        }
         val classLoader = param.defaultClassLoader
 
         // 1. Hook Window.setFlags
