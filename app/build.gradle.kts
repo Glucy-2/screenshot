@@ -158,6 +158,16 @@ tasks.matching { it.name == "packageRelease" }.configureEach {
                         if (entry.name !in metadataToStrip) {
                             val newEntry = ZipEntry(entry.name)
                             newEntry.time = entry.time
+                            // 保持原始压缩方法：Android 11+ 要求 resources.arsc
+                            // 未压缩（STORED）并在 4 字节边界对齐，否则安装失败
+                            if (entry.method == ZipEntry.STORED) {
+                                newEntry.method = ZipEntry.STORED
+                                newEntry.size = entry.size
+                                newEntry.crc = entry.crc
+                                newEntry.compressedSize = entry.size
+                            } else {
+                                newEntry.method = ZipEntry.DEFLATED
+                            }
                             zipOut.putNextEntry(newEntry)
                             if (!entry.isDirectory) {
                                 zipIn.getInputStream(entry).copyTo(zipOut)
