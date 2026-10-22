@@ -24,6 +24,7 @@ class ModuleMainKt : XposedModule() {
         private const val OPLUS_SCREENSHOT = "com.oplus.screenshot"
         private const val FLYME_SYSTEMUIEX = "com.flyme.systemuiex"
         private const val MIUI_SCREENSHOT = "com.miui.screenshot"
+        private const val OPLUS_SCREENRECORDER = "com.oplus.screenrecorder"
     }
 
     override fun onModuleLoaded(param: XposedModuleInterface.ModuleLoadedParam) {
@@ -147,11 +148,13 @@ class ModuleMainKt : XposedModule() {
                     }
                 }
                 // fall-through
+                hookOplusHardwareBuffer(classLoader)
                 hookScreenshotHardwareBufferSafe(classLoader)
                 // fall-through（OPLUS_SCREENSHOT.equals(pn) 恒真）
                 hookScreenCaptureSafe(classLoader)
             }
             FLYME_SYSTEMUIEX -> {
+                hookOplusHardwareBuffer(classLoader)
                 hookScreenshotHardwareBufferSafe(classLoader)
                 // fall-through（SDK < U 时才 hook ScreenCapture）
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -159,6 +162,7 @@ class ModuleMainKt : XposedModule() {
                 }
             }
             OPLUS_APPPLATFORM -> {
+                hookOplusHardwareBuffer(classLoader)
                 hookScreenshotHardwareBufferSafe(classLoader)
                 // fall-through（OPLUS_APPPLATFORM.equals(pn) 恒真）
                 hookScreenCaptureSafe(classLoader)
@@ -167,6 +171,10 @@ class ModuleMainKt : XposedModule() {
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                     hookScreenCaptureSafe(classLoader)
                 }
+            }
+            OPLUS_SCREENRECORDER -> {
+                hookOplusHardwareBuffer(classLoader)
+                hookOplusInfoMonitor(classLoader)
             }
             else -> {
                 try {
@@ -425,6 +433,41 @@ class ModuleMainKt : XposedModule() {
         )
         val method = screenshotHardwareBufferClazz.getDeclaredMethod("containsSecureLayers")
         hook(method).intercept { false }
+    }
+
+    private fun hookOplusHardwareBuffer(classLoader: ClassLoader) {
+        try {
+            val clazz = classLoader.loadClass("com.oplus.screenshot.OplusScreenCapture\$ScreenshotHardwareBuffer")
+            val method = clazz.getDeclaredMethod("containsSecureLayers")
+            hook(method).intercept { false }
+        } catch (ignored: ClassNotFoundException) {
+        } catch (ignored: NoSuchMethodException) {
+        } catch (t: Throwable) {
+            log(Log.ERROR, TAG, "hook Oplus ScreenshotHardwareBuffer failed", t)
+        }
+    }
+
+    private fun hookOplusInfoMonitor(classLoader: ClassLoader) {
+        try {
+            val clazz = classLoader.loadClass("com.oplus.display.OplusInfoMonitor")
+            for (method in clazz.declaredMethods) {
+                if (method.name != "registerSfEvent") continue
+                hook(method).intercept { chain ->
+                    val listener = chain.getArg(0)
+                    val tag = chain.getArg(2)
+                    val listenerName = listener?.javaClass?.name ?: ""
+                    if ("com.oplus.screenrecordersecure" == tag &&
+                        listenerName.startsWith("com.oplus.screenrecorder.")
+                    ) {
+                        return@intercept null
+                    }
+                    chain.proceed()
+                }
+            }
+        } catch (ignored: ClassNotFoundException) {
+        } catch (t: Throwable) {
+            log(Log.ERROR, TAG, "hook OplusInfoMonitor failed", t)
+        }
     }
 
     @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
