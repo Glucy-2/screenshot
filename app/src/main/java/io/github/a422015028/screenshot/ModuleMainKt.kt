@@ -25,6 +25,7 @@ class ModuleMainKt : XposedModule() {
         private const val FLYME_SYSTEMUIEX = "com.flyme.systemuiex"
         private const val MIUI_SCREENSHOT = "com.miui.screenshot"
         private const val OPLUS_SCREENRECORDER = "com.oplus.screenrecorder"
+        private const val ANDROID_17 = 37
     }
 
     override fun onModuleLoaded(param: XposedModuleInterface.ModuleLoadedParam) {
@@ -323,61 +324,94 @@ class ModuleMainKt : XposedModule() {
             SurfaceControl::class.java
         }
         val systemServerCl = displayControlClazz.classLoader
-        val method = displayControlClazz.getDeclaredMethod(
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-                "createVirtualDisplay"
-            } else {
-                "createDisplay"
-            },
-            String::class.java,
-            Boolean::class.javaPrimitiveType
-        )
-        hook(method).intercept { chain ->
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                val stackTrace = Throwable().stackTrace
-                for (frame in stackTrace) {
-                    val name = frame.methodName
-                    try {
-                        if (name == "createVirtualDisplayLocked" &&
-                            classLoader.loadClass(frame.className).classLoader == systemServerCl
-                        ) {
-                            return@intercept chain.proceed()
+        val methodName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            "createVirtualDisplay"
+        } else {
+            "createDisplay"
+        }
+        // Android 17 (SDK 37) adds an overload (String, boolean, boolean, String, int, float) next to
+        // (String, boolean); there, hook every overload that starts with (name, secure). Older
+        // releases keep hooking only the (String, boolean) overload, exactly as before: their longer
+        // overloads are also used by VirtualDisplayAdapter, which deliberately leaves displays of
+        // ordinary apps alone.
+        val methods = displayControlClazz.declaredMethods.filter {
+            it.name == methodName &&
+                it.parameterCount >= 2 &&
+                it.parameterTypes[0] == String::class.java &&
+                it.parameterTypes[1] == Boolean::class.javaPrimitiveType &&
+                (it.parameterCount == 2 || Build.VERSION.SDK_INT >= ANDROID_17)
+        }
+        if (methods.isEmpty()) throw NoSuchMethodException("${displayControlClazz.name}.$methodName(String, boolean, ...)")
+        methods.forEach { method ->
+            hook(method).intercept { chain ->
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    val stackTrace = Throwable().stackTrace
+                    for (frame in stackTrace) {
+                        val name = frame.methodName
+                        try {
+                            if (name == "createVirtualDisplayLocked" &&
+                                classLoader.loadClass(frame.className).classLoader == systemServerCl
+                            ) {
+                                return@intercept chain.proceed()
+                            }
+                        } catch (ignored: ClassNotFoundException) {
                         }
-                    } catch (ignored: ClassNotFoundException) {
                     }
                 }
+                val args = chain.args.toTypedArray()
+                args[1] = true
+                return@intercept chain.proceed(args)
             }
-            val args = chain.args.toTypedArray()
-            args[1] = true
-            return@intercept chain.proceed(args)
         }
     }
 
     private fun hookVirtualDisplayAdapter(classLoader: ClassLoader) {
-        val displayControlClazz = classLoader.loadClass("com.android.server.display.VirtualDisplayAdapter")
-        hookMethods(
-            displayControlClazz,
-            XposedInterface.Hooker { chain ->
-                val caller = chain.getArg(2) as Int
-                if (caller >= 10000 && chain.getArg(1) == null) {
-                    // not os and not media projection
-                    return@Hooker chain.proceed()
+        // createVirtualDisplayLocked lives in VirtualDisplayAdapter up to Android 16. On Android 17
+        // (SDK 37) it is gone there and DisplayManagerService.createVirtualDisplayLocked takes over.
+        // Both take (callback, projection, callingUid, ..., int flags, ...).
+        val hooker = XposedInterface.Hooker { chain ->
+            val caller = chain.getArg(2) as Int
+            if (caller >= 10000 && chain.getArg(1) == null) {
+                // not os and not media projection
+                return@Hooker chain.proceed()
+            }
+            for (i in 3 until chain.args.size) {
+                val arg = chain.getArg(i)
+                if (arg is Int) {
+                    var flags = arg
+                    flags = flags or DisplayManager.VIRTUAL_DISPLAY_FLAG_SECURE
+                    val args = chain.args.toTypedArray()
+                    args[i] = flags
+                    return@Hooker chain.proceed(args)
                 }
-                for (i in 3 until chain.args.size) {
-                    val arg = chain.getArg(i)
-                    if (arg is Int) {
-                        var flags = arg
-                        flags = flags or DisplayManager.VIRTUAL_DISPLAY_FLAG_SECURE
-                        val args = chain.args.toTypedArray()
-                        args[i] = flags
-                        return@Hooker chain.proceed(args)
-                    }
-                }
-                log(Log.WARN, TAG, "flag not found in CreateVirtualDisplayLockedHooker")
-                chain.proceed()
-            },
-            "createVirtualDisplayLocked"
-        )
+            }
+            log(Log.WARN, TAG, "flag not found in CreateVirtualDisplayLockedHooker")
+            chain.proceed()
+        }
+        val classNames = if (Build.VERSION.SDK_INT >= ANDROID_17) {
+            listOf(
+                "com.android.server.display.VirtualDisplayAdapter",
+                "com.android.server.display.DisplayManagerService"
+            )
+        } else {
+            // DisplayManagerService.createVirtualDisplayLocked also exists on Android 13-16 as the
+            // caller of the adapter method; hooking it there would only duplicate the adapter hook.
+            listOf("com.android.server.display.VirtualDisplayAdapter")
+        }
+        var hooked = 0
+        for (name in classNames) {
+            val clazz = try {
+                classLoader.loadClass(name)
+            } catch (ignored: ClassNotFoundException) {
+                continue
+            }
+            val methods = clazz.declaredMethods.filter { it.name == "createVirtualDisplayLocked" }
+            methods.forEach { hook(it).intercept(hooker) }
+            hooked += methods.size
+        }
+        if (hooked == 0 && Build.VERSION.SDK_INT >= ANDROID_17) {
+            throw NoSuchMethodException("createVirtualDisplayLocked not found in VirtualDisplayAdapter or DisplayManagerService")
+        }
     }
 
     @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
